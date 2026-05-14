@@ -12,9 +12,17 @@ import (
 // (optionally seeded from a .env file in the working directory).
 type Config struct {
 	SpoonacularKey string
-	AnthropicKey   string
 	TelegramToken  string
 	TelegramChat   string // @channelusername or numeric chat id
+
+	// AIProvider selects which backend the fetcher talks to: "anthropic",
+	// "gemini", or "groq". The matching *Key field must be set; the others
+	// are ignored, so you can keep all three in .env and switch by changing
+	// AI_PROVIDER alone.
+	AIProvider   string
+	AnthropicKey string
+	GeminiKey    string
+	GroqKey      string
 
 	FetchCron   string // when to pull + process a new batch of recipes
 	PublishCron string // when to publish one ready recipe to the channel
@@ -23,7 +31,7 @@ type Config struct {
 	DBPath         string
 	ImageDir       string
 	PromptPath     string
-	AIModel        string
+	AIModel        string // empty => provider-specific default
 	AIMaxTokens    int
 }
 
@@ -34,18 +42,22 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		SpoonacularKey: os.Getenv("SPOONACULAR_API_KEY"),
-		AnthropicKey:   os.Getenv("ANTHROPIC_API_KEY"),
 		TelegramToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChat:   os.Getenv("TELEGRAM_CHANNEL_ID"),
 
-		FetchCron:   env("FETCH_CRON", "0 3 * * 1"),    // 03:00 every Monday
+		AIProvider:   strings.ToLower(env("AI_PROVIDER", "gemini")),
+		AnthropicKey: os.Getenv("ANTHROPIC_API_KEY"),
+		GeminiKey:    os.Getenv("GEMINI_API_KEY"),
+		GroqKey:      os.Getenv("GROQ_API_KEY"),
+
+		FetchCron:   env("FETCH_CRON", "0 3 * * 1"),       // 03:00 every Monday
 		PublishCron: env("PUBLISH_CRON", "0 12,20 * * *"), // 12:00 and 20:00 daily
 
 		FetchBatchSize: envInt("FETCH_BATCH_SIZE", 10),
 		DBPath:         env("DB_PATH", "data/store.json"),
 		ImageDir:       env("IMAGE_DIR", "data/images"),
 		PromptPath:     env("PROMPT_PATH", "prompt.txt"),
-		AIModel:        env("AI_MODEL", "claude-sonnet-4-5"),
+		AIModel:        os.Getenv("AI_MODEL"), // empty -> provider default
 		AIMaxTokens:    envInt("AI_MAX_TOKENS", 1500),
 	}
 
@@ -53,19 +65,45 @@ func Load() (*Config, error) {
 	if cfg.SpoonacularKey == "" {
 		missing = append(missing, "SPOONACULAR_API_KEY")
 	}
-	if cfg.AnthropicKey == "" {
-		missing = append(missing, "ANTHROPIC_API_KEY")
-	}
 	if cfg.TelegramToken == "" {
 		missing = append(missing, "TELEGRAM_BOT_TOKEN")
 	}
 	if cfg.TelegramChat == "" {
 		missing = append(missing, "TELEGRAM_CHANNEL_ID")
 	}
+	switch cfg.AIProvider {
+	case "anthropic":
+		if cfg.AnthropicKey == "" {
+			missing = append(missing, "ANTHROPIC_API_KEY")
+		}
+	case "gemini":
+		if cfg.GeminiKey == "" {
+			missing = append(missing, "GEMINI_API_KEY")
+		}
+	case "groq":
+		if cfg.GroqKey == "" {
+			missing = append(missing, "GROQ_API_KEY")
+		}
+	default:
+		return nil, fmt.Errorf("AI_PROVIDER=%q is not supported (want anthropic|gemini|groq)", cfg.AIProvider)
+	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
 	}
 	return cfg, nil
+}
+
+// AIAPIKey returns the API key for the currently selected provider.
+func (c *Config) AIAPIKey() string {
+	switch c.AIProvider {
+	case "anthropic":
+		return c.AnthropicKey
+	case "gemini":
+		return c.GeminiKey
+	case "groq":
+		return c.GroqKey
+	}
+	return ""
 }
 
 func env(key, fallback string) string {

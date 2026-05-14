@@ -15,7 +15,7 @@ import (
 // up — this decouples API availability from publish time.
 type Fetcher struct {
 	spoon     *spoonacular.Client
-	ai        *ai.Client
+	ai        ai.Provider
 	store     *storage.Storage
 	prompt    string
 	imageDir  string
@@ -25,7 +25,7 @@ type Fetcher struct {
 // NewFetcher wires the fetcher's dependencies.
 func NewFetcher(
 	spoon *spoonacular.Client,
-	aiClient *ai.Client,
+	aiClient ai.Provider,
 	store *storage.Storage,
 	prompt, imageDir string,
 	batchSize int,

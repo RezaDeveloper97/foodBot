@@ -39,7 +39,11 @@ func main() {
 
 	// Build the API clients.
 	spoonClient := spoonacular.New(cfg.SpoonacularKey)
-	aiClient := ai.New(cfg.AnthropicKey, cfg.AIModel, cfg.AIMaxTokens)
+	aiClient, err := ai.New(cfg.AIProvider, cfg.AIAPIKey(), cfg.AIModel, cfg.AIMaxTokens)
+	if err != nil {
+		log.Fatalf("ai client: %v", err)
+	}
+	log.Printf("[main] using AI provider %q", cfg.AIProvider)
 	tgClient := telegram.New(cfg.TelegramToken, cfg.TelegramChat)
 
 	// Build the two pipeline stages.
