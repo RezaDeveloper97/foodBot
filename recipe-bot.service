@@ -1,0 +1,17 @@
+[Unit]
+Description=Recipe Bot — Spoonacular -> AI -> Telegram channel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/foodBot
+EnvironmentFile=/etc/recipe-bot.env
+ExecStart=/usr/local/bin/recipe-bot
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
