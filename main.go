@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -18,6 +19,9 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags)
+
+	once := flag.Bool("once", false, "fetch one recipe, process it, publish to the channel, then exit (for testing)")
+	flag.Parse()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -53,6 +57,11 @@ func main() {
 	)
 	publisher := pipeline.NewPublisher(store, tgClient)
 
+	if *once {
+		runOnce(spoonClient, fetcher, tgClient, cfg.ImageDir)
+		return
+	}
+
 	// On a fresh start the queue is empty, so run the fetcher once up front —
 	// otherwise the first scheduled publish would have nothing to send.
 	if store.CountReady() == 0 {
@@ -79,4 +88,42 @@ func main() {
 	log.Printf("[main] shutting down")
 	<-c.Stop().Done()
 	log.Printf("[main] stopped")
+}
+
+// runOnce fetches a single fresh recipe, processes it through the AI, and
+// publishes it to the channel — then exits. Used for iterative testing of
+// prompt changes against the real channel. Bypasses storage entirely so the
+// same recipe can be sent again on the next run if needed.
+func runOnce(spoon *spoonacular.Client, fetcher *pipeline.Fetcher, tg *telegram.Client, imageDir string) {
+	log.Printf("[once] fetching one recipe from spoonacular")
+	recipes, err := spoon.GetRandom(1)
+	if err != nil {
+		log.Fatalf("[once] spoonacular: %v", err)
+	}
+	if len(recipes) == 0 {
+		log.Fatalf("[once] spoonacular returned no recipes")
+	}
+	r := recipes[0]
+	log.Printf("[once] got %d %q", r.ID, r.Title)
+
+	content, err := fetcher.ProcessRecipe(r)
+	if err != nil {
+		log.Fatalf("[once] process: %v", err)
+	}
+
+	imagePath, err := spoon.DownloadImage(r.Image, imageDir, r.ID)
+	if err != nil {
+		log.Printf("[once] image download failed: %v (publishing text-only)", err)
+		imagePath = ""
+	}
+
+	if imagePath != "" {
+		err = tg.Publish(imagePath, content)
+	} else {
+		err = tg.PublishText(content)
+	}
+	if err != nil {
+		log.Fatalf("[once] publish: %v", err)
+	}
+	log.Printf("[once] published to channel ✓")
 }

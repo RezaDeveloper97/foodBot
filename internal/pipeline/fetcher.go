@@ -127,6 +127,44 @@ func formatPost(loc localizedRecipe, readyMinutes, servings int) string {
 	return strings.TrimSpace(b.String())
 }
 
+// ProcessRecipe runs a single spoonacular recipe through the AI and returns
+// the final formatted Persian post — without touching storage, downloading
+// the image, or publishing. Used by Run() and by the -dry test mode.
+func (f *Fetcher) ProcessRecipe(r spoonacular.Recipe) (string, error) {
+	steps := r.Steps()
+	if len(steps) == 0 || len(r.ExtendedIngredients) == 0 {
+		return "", fmt.Errorf("incomplete recipe: missing steps or ingredients")
+	}
+
+	ingredients := make([]string, 0, len(r.ExtendedIngredients))
+	for _, ing := range r.ExtendedIngredients {
+		ingredients = append(ingredients, ing.Original)
+	}
+
+	payload := recipePayload{
+		Title:          r.Title,
+		ReadyInMinutes: r.ReadyInMinutes,
+		Servings:       r.Servings,
+		Ingredients:    ingredients,
+		Steps:          steps,
+	}
+	payloadJSON, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal payload: %w", err)
+	}
+
+	raw, err := f.ai.Process(f.prompt, string(payloadJSON))
+	if err != nil {
+		return "", fmt.Errorf("ai process: %w", err)
+	}
+
+	var loc localizedRecipe
+	if err := json.Unmarshal([]byte(ai.CleanOutput(raw)), &loc); err != nil {
+		return "", fmt.Errorf("parse ai json: %w (raw: %.200q)", err, raw)
+	}
+	return formatPost(loc, r.ReadyInMinutes, r.Servings), nil
+}
+
 // Run executes one fetch cycle. Errors on individual recipes are logged and
 // skipped so one bad recipe never aborts the whole batch.
 func (f *Fetcher) Run() {
@@ -145,42 +183,11 @@ func (f *Fetcher) Run() {
 			continue
 		}
 
-		steps := r.Steps()
-		if len(steps) == 0 || len(r.ExtendedIngredients) == 0 {
-			log.Printf("[fetcher] skip incomplete: %d %q", r.ID, r.Title)
-			continue
-		}
-
-		ingredients := make([]string, 0, len(r.ExtendedIngredients))
-		for _, ing := range r.ExtendedIngredients {
-			ingredients = append(ingredients, ing.Original)
-		}
-
-		payload := recipePayload{
-			Title:          r.Title,
-			ReadyInMinutes: r.ReadyInMinutes,
-			Servings:       r.Servings,
-			Ingredients:    ingredients,
-			Steps:          steps,
-		}
-		payloadJSON, err := json.MarshalIndent(payload, "", "  ")
+		content, err := f.ProcessRecipe(r)
 		if err != nil {
-			log.Printf("[fetcher] marshal payload %d: %v", r.ID, err)
+			log.Printf("[fetcher] process %d: %v", r.ID, err)
 			continue
 		}
-
-		raw, err := f.ai.Process(f.prompt, string(payloadJSON))
-		if err != nil {
-			log.Printf("[fetcher] ai process %d: %v", r.ID, err)
-			continue
-		}
-
-		var loc localizedRecipe
-		if err := json.Unmarshal([]byte(ai.CleanOutput(raw)), &loc); err != nil {
-			log.Printf("[fetcher] parse ai json %d: %v — raw: %.200q", r.ID, err, raw)
-			continue
-		}
-		content := formatPost(loc, r.ReadyInMinutes, r.Servings)
 
 		// A failed image download is not fatal — we just publish text-only.
 		imagePath, err := f.spoon.DownloadImage(r.Image, f.imageDir, r.ID)
