@@ -52,15 +52,23 @@ type recipePayload struct {
 	Steps          []string `json:"steps"`
 }
 
-// localizedRecipe is the structured JSON the AI returns. The Go side owns the
+// LocalizedRecipe is the structured JSON the AI returns. The Go side owns the
 // final telegram formatting (emojis, layout, numbering) so that even a weak
 // model can only mess up the localized text — never the structure.
-type localizedRecipe struct {
+type LocalizedRecipe struct {
 	Title       string   `json:"title"`
 	Intro       string   `json:"intro"`
 	Ingredients []string `json:"ingredients"`
 	Steps       []string `json:"steps"`
 	Tip         string   `json:"tip"`
+}
+
+// ProcessResult bundles what ProcessRecipe returns: the final formatted post
+// (what Telegram sees) and the localized fields broken out, so the fetcher
+// can save them into their own tables alongside the formatted content.
+type ProcessResult struct {
+	Content   string
+	Localized LocalizedRecipe
 }
 
 func toPersianDigits(s string) string {
@@ -79,7 +87,7 @@ func toPersianDigits(s string) string {
 
 // formatPost turns the AI's structured output plus the original meta fields
 // into the final Persian telegram post.
-func formatPost(loc localizedRecipe, readyMinutes, servings int) string {
+func formatPost(loc LocalizedRecipe, readyMinutes, servings int) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "🔥 %s\n\n", strings.TrimSpace(loc.Title))
@@ -128,12 +136,12 @@ func formatPost(loc localizedRecipe, readyMinutes, servings int) string {
 }
 
 // ProcessRecipe runs a single spoonacular recipe through the AI and returns
-// the final formatted Persian post — without touching storage, downloading
-// the image, or publishing. Used by Run() and by the -dry test mode.
-func (f *Fetcher) ProcessRecipe(r spoonacular.Recipe) (string, error) {
+// the final formatted Persian post plus the localized structured data —
+// without touching storage, downloading the image, or publishing.
+func (f *Fetcher) ProcessRecipe(r spoonacular.Recipe) (*ProcessResult, error) {
 	steps := r.Steps()
 	if len(steps) == 0 || len(r.ExtendedIngredients) == 0 {
-		return "", fmt.Errorf("incomplete recipe: missing steps or ingredients")
+		return nil, fmt.Errorf("incomplete recipe: missing steps or ingredients")
 	}
 
 	ingredients := make([]string, 0, len(r.ExtendedIngredients))
@@ -150,14 +158,17 @@ func (f *Fetcher) ProcessRecipe(r spoonacular.Recipe) (string, error) {
 	}
 	payloadJSON, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal payload: %w", err)
+		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
 	loc, err := f.generateWithRetry(r.ID, string(payloadJSON))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return formatPost(loc, r.ReadyInMinutes, r.Servings), nil
+	return &ProcessResult{
+		Content:   formatPost(loc, r.ReadyInMinutes, r.Servings),
+		Localized: loc,
+	}, nil
 }
 
 // maxRefineAttempts caps how many times we ask the model to patch its own
@@ -172,16 +183,16 @@ const maxRefineAttempts = 2
 // A refine that errors or returns invalid JSON is treated as best-effort
 // — we keep whatever clean output we already had and move on, rather than
 // failing the whole recipe.
-func (f *Fetcher) generateWithRetry(recipeID int, userPayload string) (localizedRecipe, error) {
+func (f *Fetcher) generateWithRetry(recipeID int, userPayload string) (LocalizedRecipe, error) {
 	raw, err := f.ai.Process(f.prompt, userPayload)
 	if err != nil {
-		return localizedRecipe{}, fmt.Errorf("ai process: %w", err)
+		return LocalizedRecipe{}, fmt.Errorf("ai process: %w", err)
 	}
 	clean := ai.CleanOutput(raw)
 
-	var loc localizedRecipe
+	var loc LocalizedRecipe
 	if err := json.Unmarshal([]byte(clean), &loc); err != nil {
-		return localizedRecipe{}, fmt.Errorf("parse ai json: %w (raw: %.200q)", err, raw)
+		return LocalizedRecipe{}, fmt.Errorf("parse ai json: %w (raw: %.200q)", err, raw)
 	}
 
 	for attempt := 1; attempt <= maxRefineAttempts; attempt++ {
@@ -199,7 +210,7 @@ func (f *Fetcher) generateWithRetry(recipeID int, userPayload string) (localized
 			break
 		}
 		refineClean := ai.CleanOutput(refineRaw)
-		var refined localizedRecipe
+		var refined LocalizedRecipe
 		if err := json.Unmarshal([]byte(refineClean), &refined); err != nil {
 			log.Printf("[fetcher] recipe %d: refine %d returned invalid JSON, keeping prior output",
 				recipeID, attempt)
@@ -210,12 +221,49 @@ func (f *Fetcher) generateWithRetry(recipeID int, userPayload string) (localized
 	return loc, nil
 }
 
-func validateLocalized(loc localizedRecipe) []ai.ValidationIssue {
+func validateLocalized(loc LocalizedRecipe) []ai.ValidationIssue {
 	texts := make([]string, 0, 3+len(loc.Ingredients)+len(loc.Steps))
 	texts = append(texts, loc.Title, loc.Intro, loc.Tip)
 	texts = append(texts, loc.Ingredients...)
 	texts = append(texts, loc.Steps...)
 	return ai.Validate(texts...)
+}
+
+// pairLines zips the original (english) and localized (persian) lists into a
+// position-indexed slice. If the AI returned a different number of localized
+// lines than originals, the shorter list wins and a "" fills the gap on the
+// other side — better to record what we have than to drop the whole recipe.
+func pairLines(originals, localized []string) (ings []storage.Ingredient) {
+	n := len(originals)
+	if len(localized) > n {
+		n = len(localized)
+	}
+	for i := 0; i < n; i++ {
+		var orig, loc string
+		if i < len(originals) {
+			orig = originals[i]
+		}
+		if i < len(localized) {
+			loc = localized[i]
+		}
+		ings = append(ings, storage.Ingredient{
+			Position:  i + 1,
+			Original:  orig,
+			Localized: loc,
+		})
+	}
+	return ings
+}
+
+func pairSteps(originals, localized []string) (out []storage.Step) {
+	for _, ing := range pairLines(originals, localized) {
+		out = append(out, storage.Step{
+			Position:  ing.Position,
+			Original:  ing.Original,
+			Localized: ing.Localized,
+		})
+	}
+	return out
 }
 
 // Run executes one fetch cycle. Errors on individual recipes are logged and
@@ -230,13 +278,17 @@ func (f *Fetcher) Run() {
 
 	added := 0
 	for _, r := range recipes {
-		// De-duplication guard: skip anything we've already queued.
-		if f.store.Exists(r.ID) {
+		exists, err := f.store.Exists(r.ID)
+		if err != nil {
+			log.Printf("[fetcher] exists check %d: %v", r.ID, err)
+			continue
+		}
+		if exists {
 			log.Printf("[fetcher] skip duplicate: %d %q", r.ID, r.Title)
 			continue
 		}
 
-		content, err := f.ProcessRecipe(r)
+		result, err := f.ProcessRecipe(r)
 		if err != nil {
 			log.Printf("[fetcher] process %d: %v", r.ID, err)
 			continue
@@ -249,11 +301,24 @@ func (f *Fetcher) Run() {
 			imagePath = ""
 		}
 
+		origIngredients := make([]string, 0, len(r.ExtendedIngredients))
+		for _, ing := range r.ExtendedIngredients {
+			origIngredients = append(origIngredients, ing.Original)
+		}
+
 		rec := &storage.Recipe{
-			ID:        r.ID,
-			Title:     r.Title,
-			Content:   content,
-			ImagePath: imagePath,
+			ID:             r.ID,
+			OriginalTitle:  r.Title,
+			Title:          result.Localized.Title,
+			Intro:          result.Localized.Intro,
+			Tip:            result.Localized.Tip,
+			ReadyInMinutes: r.ReadyInMinutes,
+			Servings:       r.Servings,
+			ImageURL:       r.Image,
+			ImagePath:      imagePath,
+			Content:        result.Content,
+			Ingredients:    pairLines(origIngredients, result.Localized.Ingredients),
+			Steps:          pairSteps(r.Steps(), result.Localized.Steps),
 		}
 		if err := f.store.SaveReady(rec); err != nil {
 			log.Printf("[fetcher] save %d: %v", r.ID, err)
@@ -263,5 +328,9 @@ func (f *Fetcher) Run() {
 		log.Printf("[fetcher] ready: %d %q", r.ID, r.Title)
 	}
 
-	log.Printf("[fetcher] done — %d new recipes queued (%d total ready)", added, f.store.CountReady())
+	if total, err := f.store.CountReady(); err != nil {
+		log.Printf("[fetcher] done — %d new recipes queued (count-ready error: %v)", added, err)
+	} else {
+		log.Printf("[fetcher] done — %d new recipes queued (%d total ready)", added, total)
+	}
 }

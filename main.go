@@ -21,6 +21,7 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 
 	once := flag.Bool("once", false, "fetch one recipe, process it, publish to the channel, then exit (for testing)")
+	migrate := flag.Bool("migrate", false, "create the MySQL database (if missing) and apply the schema, then exit")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -28,15 +29,25 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	if *migrate {
+		log.Printf("[migrate] applying schema to %q on %s:%d", cfg.MySQLDatabase, cfg.MySQLHost, cfg.MySQLPort)
+		if err := storage.Migrate(cfg.MySQLServerDSN(), cfg.MySQLDSN(), cfg.MySQLDatabase); err != nil {
+			log.Fatalf("[migrate] %v", err)
+		}
+		log.Printf("[migrate] done ✓")
+		return
+	}
+
 	prompt, err := os.ReadFile(cfg.PromptPath)
 	if err != nil {
 		log.Fatalf("read prompt file %q: %v", cfg.PromptPath, err)
 	}
 
-	store, err := storage.New(cfg.DBPath)
+	store, err := storage.New(cfg.MySQLDSN())
 	if err != nil {
-		log.Fatalf("storage: %v", err)
+		log.Fatalf("storage: %v (hint: run with -migrate first)", err)
 	}
+	defer store.Close()
 	if err := os.MkdirAll(cfg.ImageDir, 0o755); err != nil {
 		log.Fatalf("image dir: %v", err)
 	}
@@ -64,7 +75,11 @@ func main() {
 
 	// On a fresh start the queue is empty, so run the fetcher once up front —
 	// otherwise the first scheduled publish would have nothing to send.
-	if store.CountReady() == 0 {
+	ready, err := store.CountReady()
+	if err != nil {
+		log.Fatalf("count ready: %v", err)
+	}
+	if ready == 0 {
 		log.Printf("[main] queue empty on startup — running fetcher once")
 		fetcher.Run()
 	}
@@ -106,7 +121,7 @@ func runOnce(spoon *spoonacular.Client, fetcher *pipeline.Fetcher, tg *telegram.
 	r := recipes[0]
 	log.Printf("[once] got %d %q", r.ID, r.Title)
 
-	content, err := fetcher.ProcessRecipe(r)
+	result, err := fetcher.ProcessRecipe(r)
 	if err != nil {
 		log.Fatalf("[once] process: %v", err)
 	}
@@ -118,9 +133,9 @@ func runOnce(spoon *spoonacular.Client, fetcher *pipeline.Fetcher, tg *telegram.
 	}
 
 	if imagePath != "" {
-		err = tg.Publish(imagePath, content)
+		err = tg.Publish(imagePath, result.Content)
 	} else {
-		err = tg.PublishText(content)
+		err = tg.PublishText(result.Content)
 	}
 	if err != nil {
 		log.Fatalf("[once] publish: %v", err)

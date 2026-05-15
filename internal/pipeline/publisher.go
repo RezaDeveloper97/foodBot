@@ -23,23 +23,27 @@ func NewPublisher(store *storage.Storage, tg *telegram.Client) *Publisher {
 // Run publishes exactly one recipe. If the queue is empty it logs a warning so
 // the operator knows the fetcher needs attention.
 func (p *Publisher) Run() {
-	rec, ok := p.store.NextReady()
-	if !ok {
+	rec, err := p.store.NextReady()
+	if err != nil {
+		log.Printf("[publisher] next ready: %v", err)
+		return
+	}
+	if rec == nil {
 		log.Printf("[publisher] queue empty — nothing to publish (check the fetcher)")
 		return
 	}
 
 	log.Printf("[publisher] publishing %d %q", rec.ID, rec.Title)
 
-	var err error
+	var publishErr error
 	if rec.ImagePath != "" {
-		err = p.tg.Publish(rec.ImagePath, rec.Content)
+		publishErr = p.tg.Publish(rec.ImagePath, rec.Content)
 	} else {
-		err = p.tg.PublishText(rec.Content)
+		publishErr = p.tg.PublishText(rec.Content)
 	}
-	if err != nil {
-		log.Printf("[publisher] failed to publish %d: %v", rec.ID, err)
-		if markErr := p.store.MarkFailed(rec.ID); markErr != nil {
+	if publishErr != nil {
+		log.Printf("[publisher] failed to publish %d: %v", rec.ID, publishErr)
+		if markErr := p.store.MarkFailed(rec.ID, publishErr.Error()); markErr != nil {
 			log.Printf("[publisher] mark failed %d: %v", rec.ID, markErr)
 		}
 		return
@@ -49,5 +53,9 @@ func (p *Publisher) Run() {
 		log.Printf("[publisher] mark published %d: %v", rec.ID, err)
 		return
 	}
-	log.Printf("[publisher] published %d — %d recipes still ready", rec.ID, p.store.CountReady())
+	if n, err := p.store.CountReady(); err == nil {
+		log.Printf("[publisher] published %d — %d recipes still ready", rec.ID, n)
+	} else {
+		log.Printf("[publisher] published %d", rec.ID)
+	}
 }
