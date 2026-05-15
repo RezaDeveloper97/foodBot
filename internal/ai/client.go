@@ -2,8 +2,27 @@ package ai
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var (
+	thinkBlockRE = regexp.MustCompile(`(?s)<think>.*?</think>`)
+	codeFenceRE  = regexp.MustCompile("(?s)^```(?:json)?\\s*(.*?)\\s*```$")
+)
+
+// CleanOutput strips reasoning-model artifacts (<think>...</think>) and
+// surrounding code fences from a raw model response. Some Groq/DeepSeek/Qwen
+// reasoning models leak their chain-of-thought into the response body, and
+// many models wrap JSON output in ```json ... ``` fences.
+func CleanOutput(s string) string {
+	s = thinkBlockRE.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	if m := codeFenceRE.FindStringSubmatch(s); m != nil {
+		s = strings.TrimSpace(m[1])
+	}
+	return s
+}
 
 // Provider turns a system prompt + raw user content into the final localized
 // text. Every concrete backend (Anthropic, Gemini, Groq, ...) implements this

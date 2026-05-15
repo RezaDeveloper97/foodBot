@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"strings"
 
 	"recipe-bot/internal/ai"
 	"recipe-bot/internal/spoonacular"
@@ -50,6 +52,81 @@ type recipePayload struct {
 	Steps          []string `json:"steps"`
 }
 
+// localizedRecipe is the structured JSON the AI returns. The Go side owns the
+// final telegram formatting (emojis, layout, numbering) so that even a weak
+// model can only mess up the localized text — never the structure.
+type localizedRecipe struct {
+	Title       string   `json:"title"`
+	Intro       string   `json:"intro"`
+	Ingredients []string `json:"ingredients"`
+	Steps       []string `json:"steps"`
+	Tip         string   `json:"tip"`
+}
+
+func toPersianDigits(s string) string {
+	digits := []rune("۰۱۲۳۴۵۶۷۸۹")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(digits[r-'0'])
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// formatPost turns the AI's structured output plus the original meta fields
+// into the final Persian telegram post.
+func formatPost(loc localizedRecipe, readyMinutes, servings int) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "🔥 %s\n\n", strings.TrimSpace(loc.Title))
+
+	if intro := strings.TrimSpace(loc.Intro); intro != "" {
+		b.WriteString(intro)
+		b.WriteString("\n\n")
+	}
+
+	if readyMinutes > 0 || servings > 0 {
+		var meta []string
+		if readyMinutes > 0 {
+			meta = append(meta, "⏱️ "+toPersianDigits(fmt.Sprintf("%d", readyMinutes))+" دقیقه")
+		}
+		if servings > 0 {
+			meta = append(meta, "👥 "+toPersianDigits(fmt.Sprintf("%d", servings))+" نفر")
+		}
+		b.WriteString(strings.Join(meta, "  |  "))
+		b.WriteString("\n\n")
+	}
+
+	if len(loc.Ingredients) > 0 {
+		b.WriteString("🍴 مواد لازم:\n")
+		for _, ing := range loc.Ingredients {
+			fmt.Fprintf(&b, "• %s\n", strings.TrimSpace(ing))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(loc.Steps) > 0 {
+		b.WriteString("👨‍🍳 مراحل پخت:\n")
+		for i, step := range loc.Steps {
+			num := toPersianDigits(fmt.Sprintf("%d", i+1))
+			fmt.Fprintf(&b, "%s. %s\n", num, strings.TrimSpace(step))
+		}
+		b.WriteString("\n")
+	}
+
+	if tip := strings.TrimSpace(loc.Tip); tip != "" {
+		b.WriteString("💡 نکته‌ی سرآشپز:\n")
+		b.WriteString(tip)
+		b.WriteString("\n")
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
 // Run executes one fetch cycle. Errors on individual recipes are logged and
 // skipped so one bad recipe never aborts the whole batch.
 func (f *Fetcher) Run() {
@@ -92,11 +169,18 @@ func (f *Fetcher) Run() {
 			continue
 		}
 
-		content, err := f.ai.Process(f.prompt, string(payloadJSON))
+		raw, err := f.ai.Process(f.prompt, string(payloadJSON))
 		if err != nil {
 			log.Printf("[fetcher] ai process %d: %v", r.ID, err)
 			continue
 		}
+
+		var loc localizedRecipe
+		if err := json.Unmarshal([]byte(ai.CleanOutput(raw)), &loc); err != nil {
+			log.Printf("[fetcher] parse ai json %d: %v — raw: %.200q", r.ID, err, raw)
+			continue
+		}
+		content := formatPost(loc, r.ReadyInMinutes, r.Servings)
 
 		// A failed image download is not fatal — we just publish text-only.
 		imagePath, err := f.spoon.DownloadImage(r.Image, f.imageDir, r.ID)
