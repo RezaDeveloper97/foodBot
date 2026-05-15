@@ -15,18 +15,20 @@ import (
 const groqEndpoint = "https://api.groq.com/openai/v1/chat/completions"
 
 type groqClient struct {
-	apiKey    string
-	model     string
-	maxTokens int
-	http      *http.Client
+	apiKey      string
+	model       string
+	maxTokens   int
+	temperature float64
+	http        *http.Client
 }
 
-func newGroq(apiKey, model string, maxTokens int) *groqClient {
+func newGroq(apiKey, model string, maxTokens int, temperature float64) *groqClient {
 	return &groqClient{
-		apiKey:    apiKey,
-		model:     model,
-		maxTokens: maxTokens,
-		http:      &http.Client{Timeout: 90 * time.Second},
+		apiKey:      apiKey,
+		model:       model,
+		maxTokens:   maxTokens,
+		temperature: temperature,
+		http:        &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
@@ -36,9 +38,10 @@ type groqMessage struct {
 }
 
 type groqRequest struct {
-	Model     string        `json:"model"`
-	MaxTokens int           `json:"max_tokens,omitempty"`
-	Messages  []groqMessage `json:"messages"`
+	Model       string        `json:"model"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Temperature float64       `json:"temperature"`
+	Messages    []groqMessage `json:"messages"`
 }
 
 type groqChoice struct {
@@ -56,8 +59,9 @@ type groqResponse struct {
 
 func (c *groqClient) Process(systemPrompt, userContent string) (string, error) {
 	reqBody := groqRequest{
-		Model:     c.model,
-		MaxTokens: c.maxTokens,
+		Model:       c.model,
+		MaxTokens:   c.maxTokens,
+		Temperature: c.temperature,
 		Messages: []groqMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userContent},

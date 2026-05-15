@@ -41,24 +41,26 @@ const (
 )
 
 // New returns a Provider for the given name. Pass an empty model to use the
-// sensible default for that provider.
-func New(provider, apiKey, model string, maxTokens int) (Provider, error) {
+// sensible default for that provider. Temperature controls sampling
+// randomness — keep it low (0.2–0.4) for translation/localization tasks so
+// the model picks real words instead of inventing plausible-looking ones.
+func New(provider, apiKey, model string, maxTokens int, temperature float64) (Provider, error) {
 	switch strings.ToLower(provider) {
 	case ProviderAnthropic:
 		if model == "" {
 			model = "claude-sonnet-4-5"
 		}
-		return newAnthropic(apiKey, model, maxTokens), nil
+		return newAnthropic(apiKey, model, maxTokens, temperature), nil
 	case ProviderGemini:
 		if model == "" {
 			model = "gemini-2.0-flash"
 		}
-		return newGemini(apiKey, model, maxTokens), nil
+		return newGemini(apiKey, model, maxTokens, temperature), nil
 	case ProviderGroq:
 		if model == "" {
 			model = "llama-3.3-70b-versatile"
 		}
-		return newGroq(apiKey, model, maxTokens), nil
+		return newGroq(apiKey, model, maxTokens, temperature), nil
 	default:
 		return nil, fmt.Errorf("unknown AI provider %q (want %s|%s|%s)",
 			provider, ProviderAnthropic, ProviderGemini, ProviderGroq)

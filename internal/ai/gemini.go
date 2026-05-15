@@ -14,18 +14,20 @@ import (
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 type geminiClient struct {
-	apiKey    string
-	model     string
-	maxTokens int
-	http      *http.Client
+	apiKey      string
+	model       string
+	maxTokens   int
+	temperature float64
+	http        *http.Client
 }
 
-func newGemini(apiKey, model string, maxTokens int) *geminiClient {
+func newGemini(apiKey, model string, maxTokens int, temperature float64) *geminiClient {
 	return &geminiClient{
-		apiKey:    apiKey,
-		model:     model,
-		maxTokens: maxTokens,
-		http:      &http.Client{Timeout: 90 * time.Second},
+		apiKey:      apiKey,
+		model:       model,
+		maxTokens:   maxTokens,
+		temperature: temperature,
+		http:        &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
@@ -39,7 +41,8 @@ type geminiContent struct {
 }
 
 type geminiGenerationConfig struct {
-	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+	Temperature     float64 `json:"temperature"`
 }
 
 type geminiRequest struct {
@@ -71,7 +74,10 @@ func (c *geminiClient) Process(systemPrompt, userContent string) (string, error)
 			Role:  "user",
 			Parts: []geminiPart{{Text: userContent}},
 		}},
-		GenerationConfig: geminiGenerationConfig{MaxOutputTokens: c.maxTokens},
+		GenerationConfig: geminiGenerationConfig{
+			MaxOutputTokens: c.maxTokens,
+			Temperature:     c.temperature,
+		},
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {

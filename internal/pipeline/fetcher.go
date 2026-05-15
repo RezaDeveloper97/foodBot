@@ -153,16 +153,69 @@ func (f *Fetcher) ProcessRecipe(r spoonacular.Recipe) (string, error) {
 		return "", fmt.Errorf("marshal payload: %w", err)
 	}
 
-	raw, err := f.ai.Process(f.prompt, string(payloadJSON))
+	loc, err := f.generateWithRetry(r.ID, string(payloadJSON))
 	if err != nil {
-		return "", fmt.Errorf("ai process: %w", err)
-	}
-
-	var loc localizedRecipe
-	if err := json.Unmarshal([]byte(ai.CleanOutput(raw)), &loc); err != nil {
-		return "", fmt.Errorf("parse ai json: %w (raw: %.200q)", err, raw)
+		return "", err
 	}
 	return formatPost(loc, r.ReadyInMinutes, r.Servings), nil
+}
+
+// maxRefineAttempts caps how many times we ask the model to patch its own
+// output when the validator flags Persian-quality issues. Two is a sweet
+// spot — a single retry catches the common cases (a stray English word,
+// one formal phrase), and a second retry catches issues introduced by the
+// first patch. Beyond that, returns diminish fast.
+const maxRefineAttempts = 2
+
+// generateWithRetry calls the AI, parses its JSON, and if the validator
+// finds Persian-quality issues asks the model to patch its own output.
+// A refine that errors or returns invalid JSON is treated as best-effort
+// — we keep whatever clean output we already had and move on, rather than
+// failing the whole recipe.
+func (f *Fetcher) generateWithRetry(recipeID int, userPayload string) (localizedRecipe, error) {
+	raw, err := f.ai.Process(f.prompt, userPayload)
+	if err != nil {
+		return localizedRecipe{}, fmt.Errorf("ai process: %w", err)
+	}
+	clean := ai.CleanOutput(raw)
+
+	var loc localizedRecipe
+	if err := json.Unmarshal([]byte(clean), &loc); err != nil {
+		return localizedRecipe{}, fmt.Errorf("parse ai json: %w (raw: %.200q)", err, raw)
+	}
+
+	for attempt := 1; attempt <= maxRefineAttempts; attempt++ {
+		issues := validateLocalized(loc)
+		if len(issues) == 0 {
+			break
+		}
+		log.Printf("[fetcher] recipe %d: %d validation issue(s) on attempt %d, asking model to fix",
+			recipeID, len(issues), attempt)
+
+		refineRaw, refineErr := f.ai.Process(f.prompt, ai.FormatRetryRequest(clean, issues))
+		if refineErr != nil {
+			log.Printf("[fetcher] recipe %d: refine %d failed: %v (keeping prior output)",
+				recipeID, attempt, refineErr)
+			break
+		}
+		refineClean := ai.CleanOutput(refineRaw)
+		var refined localizedRecipe
+		if err := json.Unmarshal([]byte(refineClean), &refined); err != nil {
+			log.Printf("[fetcher] recipe %d: refine %d returned invalid JSON, keeping prior output",
+				recipeID, attempt)
+			break
+		}
+		loc, clean = refined, refineClean
+	}
+	return loc, nil
+}
+
+func validateLocalized(loc localizedRecipe) []ai.ValidationIssue {
+	texts := make([]string, 0, 3+len(loc.Ingredients)+len(loc.Steps))
+	texts = append(texts, loc.Title, loc.Intro, loc.Tip)
+	texts = append(texts, loc.Ingredients...)
+	texts = append(texts, loc.Steps...)
+	return ai.Validate(texts...)
 }
 
 // Run executes one fetch cycle. Errors on individual recipes are logged and

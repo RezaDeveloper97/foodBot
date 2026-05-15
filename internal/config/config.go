@@ -31,8 +31,9 @@ type Config struct {
 	DBPath         string
 	ImageDir       string
 	PromptPath     string
-	AIModel        string // empty => provider-specific default
+	AIModel        string  // empty => provider-specific default
 	AIMaxTokens    int
+	AITemperature  float64 // lower => more deterministic, fewer invented words
 }
 
 // Load reads .env (if present) then the environment, validates required
@@ -59,6 +60,7 @@ func Load() (*Config, error) {
 		PromptPath:     env("PROMPT_PATH", "prompt.txt"),
 		AIModel:        os.Getenv("AI_MODEL"), // empty -> provider default
 		AIMaxTokens:    envInt("AI_MAX_TOKENS", 1500),
+		AITemperature:  envFloat("AI_TEMPERATURE", 0.3),
 	}
 
 	var missing []string
@@ -116,6 +118,15 @@ func env(key, fallback string) string {
 func envInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
 			return n
 		}
 	}
