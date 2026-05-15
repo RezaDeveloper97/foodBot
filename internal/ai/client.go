@@ -7,21 +7,23 @@ import (
 )
 
 var (
-	thinkBlockRE = regexp.MustCompile(`(?s)<think>.*?</think>`)
-	codeFenceRE  = regexp.MustCompile("(?s)^```(?:json)?\\s*(.*?)\\s*```$")
+	thinkBlockRE   = regexp.MustCompile(`(?s)<think>.*?</think>`)
+	leadFenceRE    = regexp.MustCompile("(?i)^\\s*```(?:json)?\\s*\n?")
+	trailFenceRE   = regexp.MustCompile("\n?\\s*```\\s*$")
 )
 
 // CleanOutput strips reasoning-model artifacts (<think>...</think>) and
 // surrounding code fences from a raw model response. Some Groq/DeepSeek/Qwen
 // reasoning models leak their chain-of-thought into the response body, and
-// many models wrap JSON output in ```json ... ``` fences.
+// many models wrap JSON output in ```json ... ``` fences. The fence stripping
+// handles each fence independently so a response truncated mid-stream (no
+// closing fence) is still recoverable.
 func CleanOutput(s string) string {
 	s = thinkBlockRE.ReplaceAllString(s, "")
 	s = strings.TrimSpace(s)
-	if m := codeFenceRE.FindStringSubmatch(s); m != nil {
-		s = strings.TrimSpace(m[1])
-	}
-	return s
+	s = leadFenceRE.ReplaceAllString(s, "")
+	s = trailFenceRE.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // Provider turns a system prompt + raw user content into the final localized
