@@ -24,8 +24,15 @@ type Config struct {
 	GeminiKey    string
 	GroqKey      string
 
-	FetchCron   string // when to pull + process a new batch of recipes
-	PublishCron string // when to publish one ready recipe to the channel
+	FetchCron     string // when to pull + process a new batch of recipes
+	PublishCron   string // when to publish one ready recipe to the channel
+	BatchPollCron string // when to poll in-progress Anthropic batches (batch mode only)
+
+	// AIBatchMode swaps the sync fetcher for the asynchronous Anthropic
+	// Messages Batch API path: FetchCron submits a batch, BatchPollCron
+	// collects results, and the publisher reads ready rows like always.
+	// Only meaningful when AIProvider == "anthropic".
+	AIBatchMode bool
 
 	FetchBatchSize int
 	ImageDir       string
@@ -58,8 +65,10 @@ func Load() (*Config, error) {
 		GeminiKey:    os.Getenv("GEMINI_API_KEY"),
 		GroqKey:      os.Getenv("GROQ_API_KEY"),
 
-		FetchCron:   env("FETCH_CRON", "0 3 * * 1"),       // 03:00 every Monday
-		PublishCron: env("PUBLISH_CRON", "0 12,20 * * *"), // 12:00 and 20:00 daily
+		FetchCron:     env("FETCH_CRON", "0 3 * * 1"),       // 03:00 every Monday
+		PublishCron:   env("PUBLISH_CRON", "0 12,20 * * *"), // 12:00 and 20:00 daily
+		BatchPollCron: env("BATCH_POLL_CRON", "*/10 * * * *"),
+		AIBatchMode:   envBool("AI_BATCH_MODE", false),
 
 		FetchBatchSize: envInt("FETCH_BATCH_SIZE", 10),
 		ImageDir:       env("IMAGE_DIR", "data/images"),
@@ -103,6 +112,9 @@ func Load() (*Config, error) {
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
+	}
+	if cfg.AIBatchMode && cfg.AIProvider != "anthropic" {
+		return nil, fmt.Errorf("AI_BATCH_MODE=true requires AI_PROVIDER=anthropic (got %q)", cfg.AIProvider)
 	}
 	return cfg, nil
 }
@@ -152,6 +164,19 @@ func envInt(key string, fallback int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
+	}
+	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
 	}
 	return fallback
 }
