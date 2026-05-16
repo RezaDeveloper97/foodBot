@@ -65,7 +65,7 @@ func Load() (*Config, error) {
 		ImageDir:       env("IMAGE_DIR", "data/images"),
 		PromptPath:     env("PROMPT_PATH", "prompt.txt"),
 		AIModel:        os.Getenv("AI_MODEL"), // empty -> provider default
-		AIMaxTokens:    envInt("AI_MAX_TOKENS", 1500),
+		AIMaxTokens:    envInt("AI_MAX_TOKENS", 8192),
 		AITemperature:  envFloat("AI_TEMPERATURE", 0.3),
 
 		MySQLHost:     env("MYSQL_HOST", "127.0.0.1"),
