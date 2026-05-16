@@ -69,7 +69,7 @@ func main() {
 	publisher := pipeline.NewPublisher(store, tgClient)
 
 	if *once {
-		runOnce(spoonClient, fetcher, tgClient, cfg.ImageDir)
+		runOnce(spoonClient, fetcher, publisher, store, cfg.ImageDir)
 		return
 	}
 
@@ -105,20 +105,46 @@ func main() {
 	log.Printf("[main] stopped")
 }
 
-// runOnce fetches a single fresh recipe, processes it through the AI, and
-// publishes it to the channel — then exits. Used for iterative testing of
-// prompt changes against the real channel. Bypasses storage entirely so the
-// same recipe can be sent again on the next run if needed.
-func runOnce(spoon *spoonacular.Client, fetcher *pipeline.Fetcher, tg *telegram.Client, imageDir string) {
-	log.Printf("[once] fetching one recipe from spoonacular")
-	recipes, err := spoon.GetRandom(1)
-	if err != nil {
-		log.Fatalf("[once] spoonacular: %v", err)
+// runOnce fetches a single fresh recipe, processes it through the AI, persists
+// it to storage as "ready", and then publishes the next ready item from the
+// queue — so the publish path always reads from the DB, never from memory.
+func runOnce(
+	spoon *spoonacular.Client,
+	fetcher *pipeline.Fetcher,
+	publisher *pipeline.Publisher,
+	store *storage.Storage,
+	imageDir string,
+) {
+	log.Printf("[once] fetching one fresh recipe from spoonacular")
+
+	// Pull recipes until we find one that isn't already in the store. The free
+	// tier returns very few duplicates, but bail after a few tries instead of
+	// looping forever.
+	const maxAttempts = 5
+	var r spoonacular.Recipe
+	found := false
+	for attempt := 1; attempt <= maxAttempts && !found; attempt++ {
+		recipes, err := spoon.GetRandom(1)
+		if err != nil {
+			log.Fatalf("[once] spoonacular: %v", err)
+		}
+		if len(recipes) == 0 {
+			log.Fatalf("[once] spoonacular returned no recipes")
+		}
+		exists, err := store.Exists(recipes[0].ID)
+		if err != nil {
+			log.Fatalf("[once] exists check: %v", err)
+		}
+		if exists {
+			log.Printf("[once] %d %q already in store, retrying", recipes[0].ID, recipes[0].Title)
+			continue
+		}
+		r = recipes[0]
+		found = true
 	}
-	if len(recipes) == 0 {
-		log.Fatalf("[once] spoonacular returned no recipes")
+	if !found {
+		log.Fatalf("[once] could not find a fresh (non-duplicate) recipe after %d attempts", maxAttempts)
 	}
-	r := recipes[0]
 	log.Printf("[once] got %d %q", r.ID, r.Title)
 
 	result, err := fetcher.ProcessRecipe(r)
@@ -128,17 +154,14 @@ func runOnce(spoon *spoonacular.Client, fetcher *pipeline.Fetcher, tg *telegram.
 
 	imagePath, err := spoon.DownloadImage(r.Image, imageDir, r.ID)
 	if err != nil {
-		log.Printf("[once] image download failed: %v (publishing text-only)", err)
+		log.Printf("[once] image download failed: %v (will publish text-only)", err)
 		imagePath = ""
 	}
 
-	if imagePath != "" {
-		err = tg.Publish(imagePath, result.Content)
-	} else {
-		err = tg.PublishText(result.Content)
+	if err := fetcher.SaveProcessed(r, result, imagePath); err != nil {
+		log.Fatalf("[once] save: %v", err)
 	}
-	if err != nil {
-		log.Fatalf("[once] publish: %v", err)
-	}
-	log.Printf("[once] published to channel ✓")
+	log.Printf("[once] saved %d to store as ready ✓", r.ID)
+
+	publisher.Run()
 }

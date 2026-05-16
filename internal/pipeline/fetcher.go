@@ -266,6 +266,32 @@ func pairSteps(originals, localized []string) (out []storage.Step) {
 	return out
 }
 
+// SaveProcessed builds a storage.Recipe from a spoonacular recipe plus the
+// AI-processed result (and resolved image path) and writes it to the store as
+// "ready". Shared by the scheduled batch path and the -once test path so the
+// DB is always the source of truth before anything is published.
+func (f *Fetcher) SaveProcessed(r spoonacular.Recipe, result *ProcessResult, imagePath string) error {
+	origIngredients := make([]string, 0, len(r.ExtendedIngredients))
+	for _, ing := range r.ExtendedIngredients {
+		origIngredients = append(origIngredients, ing.Original)
+	}
+	rec := &storage.Recipe{
+		ID:             r.ID,
+		OriginalTitle:  r.Title,
+		Title:          result.Localized.Title,
+		Intro:          result.Localized.Intro,
+		Tip:            result.Localized.Tip,
+		ReadyInMinutes: r.ReadyInMinutes,
+		Servings:       r.Servings,
+		ImageURL:       r.Image,
+		ImagePath:      imagePath,
+		Content:        result.Content,
+		Ingredients:    pairLines(origIngredients, result.Localized.Ingredients),
+		Steps:          pairSteps(r.Steps(), result.Localized.Steps),
+	}
+	return f.store.SaveReady(rec)
+}
+
 // Run executes one fetch cycle. Errors on individual recipes are logged and
 // skipped so one bad recipe never aborts the whole batch.
 func (f *Fetcher) Run() {
@@ -301,26 +327,7 @@ func (f *Fetcher) Run() {
 			imagePath = ""
 		}
 
-		origIngredients := make([]string, 0, len(r.ExtendedIngredients))
-		for _, ing := range r.ExtendedIngredients {
-			origIngredients = append(origIngredients, ing.Original)
-		}
-
-		rec := &storage.Recipe{
-			ID:             r.ID,
-			OriginalTitle:  r.Title,
-			Title:          result.Localized.Title,
-			Intro:          result.Localized.Intro,
-			Tip:            result.Localized.Tip,
-			ReadyInMinutes: r.ReadyInMinutes,
-			Servings:       r.Servings,
-			ImageURL:       r.Image,
-			ImagePath:      imagePath,
-			Content:        result.Content,
-			Ingredients:    pairLines(origIngredients, result.Localized.Ingredients),
-			Steps:          pairSteps(r.Steps(), result.Localized.Steps),
-		}
-		if err := f.store.SaveReady(rec); err != nil {
+		if err := f.SaveProcessed(r, result, imagePath); err != nil {
 			log.Printf("[fetcher] save %d: %v", r.ID, err)
 			continue
 		}
